@@ -1,0 +1,208 @@
+
+;-------------------------------------------------------------------------------
+; MSP430 Assembler Code Template for use with TI Code Composer Studio
+;
+;
+;-------------------------------------------------------------------------------
+            .cdecls C,LIST,"msp430.h"       ; Include device header file
+            
+;-------------------------------------------------------------------------------
+            .def    RESET                   ; Export program entry-point to
+                                            ; make it known to linker.
+;-------------------------------------------------------------------------------
+            .text                           ; Assemble into program memory.
+            .retain                         ; Override ELF conditional linking
+                                            ; and retain current section.
+            .retainrefs                     ; And retain any sections that have
+                                            ; references to current section.
+;-------------------------------------------------------------------------------
+;Macros
+;-------------------------------------------------------------------------------
+WriteChar	.macro D
+				add.w  Chars,	  BUFFER
+				mov.b  D(Digits), R14
+				add.w  #LCDCCTL0,     R14
+				mov.b  @BUFFER,			0(R14)
+			.endm
+
+WriteTime	.macro Time, D1, Dh
+				mov.b  Time, BUFFER
+				and.b  #0x0F, BUFFER
+
+				WriteChar	D1
+				;If bugged maybe and #0x0F BUFFER again
+				mov.b	Time,	BUFFER
+				rrum.w #4, BUFFER
+
+				WriteChar		Dh
+			.endm
+
+;-------------------------------------------------------------------------------
+;Definitions
+;-------------------------------------------------------------------------------
+Chars		.equ	R4
+Digits		.equ	R5
+MSECS		.equ	R6
+SECS		.equ	R7
+MINS		.equ	R8
+BUFFER		.equ	R9
+;-------------------------------------------------------------------------------
+
+;-------------------------------------------------------------------------------
+RESET       mov.w   #__STACK_END,SP         ; Initialize stackpointer
+StopWDT     mov.w   #WDTPW|WDTHOLD,&WDTCTL  ; Stop watchdog timer
+			clr     PM5CTL0
+
+;-------------------------------------------------------------------------------
+; Main loop here
+;-------------------------------------------------------------------------------
+TA0Config:	mov.w #0x02C0,	 &TA0CTL
+			mov.w #0x0000,	 &TA0R
+			mov.w #156,	 &TA0CCR0
+			mov.w #0x0007,	 &TA0EX0
+
+IOConfig:	mov.b		#0x00, &P2SEL0
+			mov.b		#0x00, &P2SEL1
+			mov.b		#0xFF, &P2DIR ; All Output
+
+			mov.b		#0x00, &P3SEL0
+			mov.b		#0x00, &P3SEL1
+			mov.b		#0x00, &P3DIR ; All Input
+
+LoadChars:	mov.w #0x8000, 	 Chars
+			mov.b #0xFC, 	 0(Chars)
+			mov.b #0x60, 	 1(Chars)
+			mov.b #0xDB, 	 2(Chars)
+			mov.b #0xF3, 	 3(Chars)
+			mov.b #0x67, 	 4(Chars)
+			mov.b #0xB7, 	 5(Chars)
+			mov.b #0xBF, 	 6(Chars)
+			mov.b #0xE0, 	 7(Chars)
+			mov.b #0xFF, 	 8(Chars)
+			mov.b #0xF7, 	 9(Chars)
+
+LoadDigits:	mov.w #8100, 	 Digits
+			mov.b #0x29,	 1(Digits)
+			mov.b #0x25,	 2(Digits)
+			mov.b #0x23,	 3(Digits)
+			mov.b #0x32,   4(Digits)
+			mov.b #0x2E,   5(Digits)
+			mov.b #0x27,   6(Digits)
+
+LCDConfig:	mov.w #0x041C,	 &LCDCCTL0 ; Set up the LCD Display
+			mov.w #0xFFD0,   &LCDCPCTL0
+			mov.w #0xF83F,   &LCDCPCTL1
+			mov.w #0x00F8,	 &LCDCPCTL2
+			mov.w #0x0608,   &LCDCVCTL
+			mov.w #0x8000,   &LCDCCPCTL
+
+Start:		bis	  #LCDON, 	 &LCDCCTL0   ; Turn on the display
+			bis	  #LCDCLRM,  &LCDCMEMCTL ; Clear the display
+			bis	  #CCIE,	 &TA0CCTL0
+			nop
+			eint
+			nop
+			bis	  #0x0020, 	 &TA0CTL
+
+			; Start at 0
+			clr		  MSECS
+			clr		  SECS
+			clr		  MINS
+
+			nop
+			;Put the colons
+			mov.b #0x04, &LCDM7
+			mov.b #0x04, &LCDM20
+			nop
+
+MainLoop:
+        call    #ReadSensors
+        call    #ControlMotors
+        jmp     MainLoop               ; Event loop
+
+WAIT:		jmp	  WAIT			; Event Loop
+			nop
+
+;-------------------------------------------------------------------------------
+; Timer A0 Interrupt Service Routine
+;-------------------------------------------------------------------------------
+TA0_ISR:	nop
+
+UpdateTime: clrc
+			dadd	#0x01, MSECS
+			cmp		#0x99, MSECS
+			jne		UpdateDisp
+			clr		MSECS
+			clrc
+			dadd	#0x01, SECS
+			cmp		#0x59, SECS
+			jne		UpdateDisp
+			clr	 	SECS
+			clrc
+			dadd	#0x01, MINS
+
+UpdateDisp: ; Update the Milliseconds
+			WriteTime	MSECS, 6, 5
+			; Update the Seconds
+			WriteTime	SECS, 4, 3
+			; Update the Minutes
+			WriteTime	MINS, 2, 1
+
+CleanUp:	mov.w #0x0000, &TA0R
+			bic	#CCIFG, &TA0CCTL0
+
+			reti
+
+;-------------------------------------------------------------------------------
+; Read sensors and control motors based on sensor input
+;-------------------------------------------------------------------------------
+ReadSensors:
+        	mov.b   &P2IN, R12             ; Read sensor values into R12
+        	ret
+
+ControlMotors:
+        ; Basic decision making based on sensor input (R12)
+        ; Assuming sensors are connected as follows:
+        ; Bit 0: Left sensor
+        ; Bit 1: Left middle sensor
+        ; Bit 2: Right middle sensor
+        ; Bit 3: Right sensor
+        ; Motors control on PWM:
+        ; P3.0 for left motor (PWMA)
+        ; P3.1 for right motor (PWMB)
+        bit.b   #0x06, R12             ; Check if middle sensors (bits 1 and 2) see line
+        jz      turn                   ; If zero, no line under middle sensors
+        mov.b   #0x03, &P3OUT          ; Both motors forward (P3.0, P3.1)
+        ret
+
+turn:
+        bit.b   #0x08, R12             ; Check rightmost sensor
+        jnz     right_turn
+        bit.b   #0x01, R12             ; Check leftmost sensor
+        jnz     left_turn
+
+        ; If no clear turn direction, stop motors
+        bic.b   #0xFF, &P3OUT
+        ret
+
+right_turn:
+        mov.b   #0x02, &P3OUT          ; Right motor forward (P3.1)
+        ret
+
+left_turn:
+        mov.b   #0x01, &P3OUT          ; Left motor forward (P3.0)
+        ret
+;-------------------------------------------------------------------------------
+; Stack Pointer definition
+;-------------------------------------------------------------------------------
+            .global __STACK_END
+            .sect   .stack
+            
+;-------------------------------------------------------------------------------
+; Interrupt Vectors
+;-------------------------------------------------------------------------------
+            .sect   ".reset"                ; MSP430 RESET Vector
+            .short  RESET
+            
+			.sect	".int44"
+			.short	TA0_ISR
