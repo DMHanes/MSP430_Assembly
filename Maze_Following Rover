@@ -51,23 +51,25 @@ BUFFER		.equ	R9
 ;-------------------------------------------------------------------------------
 RESET       mov.w   #__STACK_END,SP         ; Initialize stackpointer
 StopWDT     mov.w   #WDTPW|WDTHOLD,&WDTCTL  ; Stop watchdog timer
-			clr     PM5CTL0
+
 
 ;-------------------------------------------------------------------------------
 ; Main loop here
 ;-------------------------------------------------------------------------------
 TA0Config:	mov.w #0x02C0,	 &TA0CTL
 			mov.w #0x0000,	 &TA0R
-			mov.w #156,	 &TA0CCR0
+			mov.w #156,	 	 &TA0CCR0
 			mov.w #0x0007,	 &TA0EX0
 
-IOConfig:	mov.b		#0x00, &P2SEL0
-			mov.b		#0x00, &P2SEL1
-			mov.b		#0xFF, &P2DIR ; All Output
+IOCONFIG:	mov.b #0x00,	&P2DIR ;config sensor as input
+			mov.b #0xFF,	&P2REN
+			mov.b #0xFF,	&P2OUT
+			mov.b #0xFF,	&P2IN
 
-			mov.b		#0x00, &P3SEL0
-			mov.b		#0x00, &P3SEL1
-			mov.b		#0x00, &P3DIR ; All Input
+			mov.b #0xFF,	&P3DIR
+			mov.b #0x00,	&P3OUT
+
+			clr     PM5CTL0
 
 LoadChars:	mov.w #0x8000, 	 Chars
 			mov.b #0xFC, 	 0(Chars)
@@ -115,10 +117,11 @@ Start:		bis	  #LCDON, 	 &LCDCCTL0   ; Turn on the display
 			mov.b #0x04, &LCDM20
 			nop
 
-MainLoop:
-        call    #ReadSensors
-        call    #ControlMotors
-        jmp     MainLoop               ; Event loop
+
+MainLoop:	mov.b   #0x00, &P3OUT
+        	call    #ReadSensors
+        	call    #ControlMotors
+        	jmp     MainLoop               ; Event loop
 
 WAIT:		jmp	  WAIT			; Event Loop
 			nop
@@ -157,41 +160,113 @@ CleanUp:	mov.w #0x0000, &TA0R
 ; Read sensors and control motors based on sensor input
 ;-------------------------------------------------------------------------------
 ReadSensors:
+			mov.b   #0x00, &P3OUT
         	mov.b   &P2IN, R12             ; Read sensor values into R12
         	ret
 
 ControlMotors:
         ; Basic decision making based on sensor input (R12)
         ; Assuming sensors are connected as follows:
-        ; Bit 0: Left sensor
-        ; Bit 1: Left middle sensor
-        ; Bit 2: Right middle sensor
-        ; Bit 3: Right sensor
+        ; Bit 0: front
+        ; Bit 1: left
+        ; Bit 2: middle
+        ; Bit 3: right
         ; Motors control on PWM:
         ; P3.0 for left motor (PWMA)
         ; P3.1 for right motor (PWMB)
-        bit.b   #0x06, R12             ; Check if middle sensors (bits 1 and 2) see line
-        jz      turn                   ; If zero, no line under middle sensors
-        mov.b   #0x03, &P3OUT          ; Both motors forward (P3.0, P3.1)
-        ret
 
-turn:
-        bit.b   #0x08, R12             ; Check rightmost sensor
-        jnz     right_turn
-        bit.b   #0x01, R12             ; Check leftmost sensor
-        jnz     left_turn
+		;mov.b   #0x00, &P3OUT
 
-        ; If no clear turn direction, stop motors
-        bic.b   #0xFF, &P3OUT
-        ret
+		cmp.b #0xFF,	R12
+        jeq Straight
 
-right_turn:
+		cmp.b #0xFE,	R12
+        jeq Left
+
+		cmp.b #0xFD,	R12
+        jeq Straight
+
+		cmp.b #0xFC,	R12
+        jeq Right
+
+        cmp.b #0xFB,	R12
+        jeq Left
+
+        cmp.b #0xFA,	R12
+        jeq Left
+
+        cmp.b #0xF9,	R12
+        jeq Right
+
+        cmp.b #0xF8,	R12
+        jeq Right
+
+        cmp.b #0xF7,	R12
+        jeq Left
+
+        cmp.b #0xF6,	R12
+        jeq Left
+
+        cmp.b #0xF5,	R12
+        jeq Straight
+
+        cmp.b #0xF4,	R12
+        jeq Stop
+
+        cmp.b #0xF3,	R12
+        jeq Left
+
+        cmp.b #0xF2,	R12
+        jeq Left
+
+        cmp.b #0xF1,	R12
+        jeq Straight
+
+        cmp.b #0xF0,	R12
+        jeq Stop
+
+Straight:
+        	mov.b   #0x03, &P3OUT          ; Both motors forward (P3.0, P3.1)
+        	;mov.b   #0x00, &P3OUT
+        	ret
+
+Right:	;mov.b   #0x00, &P3OUT
+		mov.b   &P2IN, R12             ; Read sensor values into R12
         mov.b   #0x02, &P3OUT          ; Right motor forward (P3.1)
+        cmp #0xF1,	R12
+        jeq Straight
+        cmp #0xF5,	R12
+        jeq Straight
+        cmp #0xFD,	R12
+        jeq Straight
         ret
 
-left_turn:
+Left:	mov.b   #0x00, &P3OUT
+		mov.b   &P2IN, R12             ; Read sensor values into R12
+		mov.b   #0x03, &P3OUT 		   ; Go forward to minimize left turn extremity
+		mov.b   #0x02, &P3OUT          ; Right motor to decrease left turn sensitivity?
         mov.b   #0x01, &P3OUT          ; Left motor forward (P3.0)
+        cmp #0xF1,	R12
+        jeq Straight
+        cmp #0xF5,	R12
+        jeq Straight
+        cmp #0xFD,	R12
+        jeq Straight
         ret
+
+Stop:	mov.b   &P2IN, R12             ; Read sensor values into R12
+        mov.b   #0x00, &P3OUT          ; Left motor forward (P3.0)
+        cmp #0xF1,	R12
+        jeq Straight
+        cmp #0xF5,	R12
+        jeq Straight
+        cmp #0xFD,	R12
+        jeq Straight
+        ret
+
+
+        ;Right Codes :F8 F9 FC
+
 ;-------------------------------------------------------------------------------
 ; Stack Pointer definition
 ;-------------------------------------------------------------------------------
